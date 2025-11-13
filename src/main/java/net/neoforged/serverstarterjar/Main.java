@@ -5,9 +5,7 @@ import org.jetbrains.annotations.Nullable;
 import java.io.File;
 import java.io.IOException;
 import java.lang.instrument.Instrumentation;
-import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.MethodType;
+import java.lang.invoke.*;
 import java.lang.module.FindException;
 import java.lang.module.InvalidModuleDescriptorException;
 import java.lang.module.ModuleFinder;
@@ -278,9 +276,9 @@ public class Main {
             mainName = args.remove(0);
         }
 
-        final Method main;
+        final Class<?> mainClz;
         try {
-            main = Class.forName(mainName).getDeclaredMethod("main", String[].class);
+            mainClz = Class.forName(mainName);
         } catch (Exception e) {
             throw new Exception("Failed to find main class \"" + mainName + "\"", e);
         }
@@ -289,15 +287,29 @@ public class Main {
         args.addAll(startArgs);
 
         // If the main class isn't exported, export it so that we can access it
-        if (!main.getDeclaringClass().getModule().isExported(main.getDeclaringClass().getPackageName())) {
-            export(main.getDeclaringClass().getModule(), main.getDeclaringClass().getPackageName(), Main.class.getModule());
+        if (!mainClz.getModule().isExported(mainClz.getPackageName())) {
+            export(mainClz.getModule(), mainClz.getPackageName(), Main.class.getModule());
         }
 
+        final MethodHandles.Lookup lookup = MethodHandles.lookup();
+        final MethodHandle handle = lookup.findStatic(mainClz, "main", MethodType.methodType(void.class, String[].class));
+        final CallSite site = LambdaMetafactory.metafactory(
+                lookup,
+                "run",
+                MethodType.methodType(Runnable.class, String[].class),
+                MethodType.methodType(void.class),
+                handle,
+                MethodType.methodType(void.class)
+        );
         try {
-            main.invoke(null, new Object[] { args.toArray(String[]::new) });
-        } catch (InvocationTargetException exception) {
+            /*
+             * function = () -> Main.main(args);
+             */
+            final Runnable function = (Runnable) site.getTarget().invoke((Object) args.toArray(new String[0]));
+            new Thread(function).start();
+        } catch (Throwable th) {
             // The reflection will cause all exceptions to be wrapped in an InvocationTargetException
-            throw exception.getCause();
+            throw new RuntimeException("InitAuther97: Failed to produce a main function object", th);
         }
     }
 
